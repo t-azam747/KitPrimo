@@ -6,9 +6,34 @@ import { syncDirectory } from '../../lib/fs-durability.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 
+async function withFileRecord(directory, key, run) {
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  const target = path.join(directory, `${key}.json`);
+  const lock = await fs.open(target + '.lock', 'wx', 0o600).catch(error => {
+    if (error.code === 'EEXIST') throw new Error('Operation busy; reconcile a crashed process before removing its lock');
+    throw error;
+  });
+  const save = async value => {
+    const temporary = target + '.tmp';
+    const file = await fs.open(temporary, 'w', 0o600);
+    try { await file.writeFile(JSON.stringify(value) + '\n'); await file.sync(); } finally { await file.close(); }
+    await fs.rename(temporary, target);
+    await syncDirectory(directory);
+  };
+  try {
+    let record;
+    try { record = JSON.parse(await fs.readFile(target, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return await run(record, save);
+  } finally {
+    await lock.close();
+    await fs.unlink(target + '.lock');
+  }
+}
+
 // One durable directory per merchant. Chain adapters must reconcile before any
 // submission. An unknown outcome is never interpreted as an unpaid operation.
-export function createOperationStore({ directory, authenticate, reconcile, submit, produce }) {
+export function createOperationStore({ directory, withRecord = (key, run) => withFileRecord(directory, key, run), authenticate, reconcile, submit, produce }) {
   if (![authenticate, reconcile, submit, produce].every(fn => typeof fn === 'function')) throw new Error('Missing merchant adapter');
   return {
     async purchase({ authorization, request, principal }) {
@@ -19,23 +44,7 @@ export function createOperationStore({ directory, authenticate, reconcile, submi
       if (typeof request.chainId !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(request.treasury ?? '')) throw new Error('Missing deployment scope');
       const key = hash(canonicalJson({ chainId: request.chainId, treasury: request.treasury.toLowerCase(), taskId: identity.taskId, operationId: identity.operationId }));
       await authenticate({ identity, request, principal });
-      await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-      const target = path.join(directory, `${key}.json`);
-      const lock = await fs.open(target + '.lock', 'wx', 0o600).catch(error => {
-        if (error.code === 'EEXIST') throw new Error('Operation busy; reconcile a crashed process before removing its lock');
-        throw error;
-      });
-      const save = async value => {
-        const temporary = target + '.tmp';
-        const file = await fs.open(temporary, 'w', 0o600);
-        try { await file.writeFile(JSON.stringify(value) + '\n'); await file.sync(); } finally { await file.close(); }
-        await fs.rename(temporary, target);
-        await syncDirectory(directory);
-      };
-      try {
-        let record;
-        try { record = JSON.parse(await fs.readFile(target, 'utf8')); }
-        catch (error) { if (error.code !== 'ENOENT') throw error; }
+      return withRecord(key, async (record, save) => {
         if (record && record.fingerprint !== fingerprint) throw new Error('Operation fingerprint conflict');
         const observed = await reconcile({ identity, request, knownReceipt: record?.receipt });
         if (record?.status === 'ready') {
@@ -67,7 +76,7 @@ export function createOperationStore({ directory, authenticate, reconcile, submi
         record.resultHash = hash(record.result); record.status = 'ready';
         await save(record);
         return record;
-      } finally { await lock.close(); await fs.unlink(target + '.lock'); }
+      });
     },
   };
 }

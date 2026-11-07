@@ -9,7 +9,7 @@ export const requestHash = request => keccak256(stringToHex(canonicalJson(reques
 export const accessMessage = (authorization, request, expiresAt) => canonicalJson({ domain: 'janus-merchant-access/1', authorization, requestHash: requestHash(request), expiresAt });
 export const quoteMessage = quote => canonicalJson({ ...quote, domain: 'janus-merchant-quote/1' });
 
-export async function createTaskMerchant({ directory, publicClient, walletClient, manifest, produce, fromBlock = 0n, price = '20000', route = '/dataset', confirmations = 2, logPageSize = 1000n }) {
+export async function createTaskMerchant({ directory, withRecord, publicClient, walletClient, manifest, produce, fromBlock = 0n, price = '20000', route = '/dataset', confirmations = 2, logPageSize = 1000n }) {
   await validateTreasury(publicClient, manifest);
   if (!Number.isSafeInteger(confirmations) || confirmations < 1 || logPageSize < 1n || logPageSize > 10000n) throw new Error('Invalid settlement policy');
   const merchant = walletClient.account.address;
@@ -52,7 +52,7 @@ export async function createTaskMerchant({ directory, publicClient, walletClient
   };
   let settlementQueue = Promise.resolve();
   const serialize = action => { const pending = settlementQueue.then(action); settlementQueue = pending.catch(() => {}); return pending; };
-  const store = createOperationStore({ directory, produce, reconcile,
+  const store = createOperationStore({ directory, withRecord, produce, reconcile,
     authenticate: async ({ identity, request, principal }) => {
       const task = await validate({ identity, request });
       const expiry = baseUnits(principal?.expiresAt);

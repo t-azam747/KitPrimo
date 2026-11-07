@@ -42,3 +42,11 @@ The repository root `render.yaml` defines one paid Node service with a persisten
 Stop any other process using the same signer before starting the hosted merchant. Preserve its existing merchant state under the configured disk path if migrating an active deployment. After deployment, verify readiness and check that a bounded testnet purchase can be replayed after a restart without an additional debit.
 
 For a Render Free preview, create a Node Web Service from the repository root with build command `node --check backend/hedera/scripts/readonly-server.mjs`, start command `node backend/hedera/scripts/readonly-server.mjs`, and health check path `/health`. Set `SKIP_INSTALL_DEPS=true`. This entry point serves health and the checked-in testnet deployment metadata. It does not load secrets or expose payment routes.
+
+### Payment demo on Render Free
+
+For a short payment demo, provision a Free Postgres database in the same region as the web service. Free Postgres expires after 30 days. Set the service's `JANUS_MERCHANT_DATABASE_URL` to the database's internal connection URL. Set `HOST=0.0.0.0`, a random `JANUS_MERCHANT_ACCESS_TOKEN` of at least 32 characters, and the dedicated Hedera merchant key and RPC URL in Render. Change the build command to `npm ci --prefix contracts && npm ci --prefix backend --omit=dev` and the start command to `node backend/hedera/scripts/task-server.mjs`. Keep the health check path at `/health`.
+
+The database stores purchase records and a signer claim. A graceful restart releases the claim after the active purchase finishes. An abrupt stop may leave the claim in place. Confirm the old writer is stopped and reconcile the signer nonce and pending payment records before clearing that signer's row in `janus_merchant_signers`. Do not run another copy of the signer against a different journal. Use a fresh demo task or migrate existing records before moving an active merchant.
+
+For a hosted replay check, use the same authorized testnet task, step, and request with `buyTaskDataset`, passing the hosted endpoint and `merchantAccessToken`. Restart the service after the first purchase completes, then repeat the call and compare the receipt, result hash, and on-chain debit.

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createPublicClient, createWalletClient, defineChain, http as rpc } from 'viem';
 import { acquireSignerLock } from '../lib/signer-lock.mjs';
 import { privateKeyToAccount } from 'viem/accounts';
-import { createTaskMerchant, taskMerchantHandler } from '../lib/task-merchant.mjs';
+import { createTaskMerchant, requestHash, taskMerchantHandler } from '../lib/task-merchant.mjs';
 
 async function main() {
   const env = new URL('../../.env.hedera', import.meta.url);
@@ -16,9 +16,10 @@ async function main() {
     throw new Error('PORT must be an integer between 1 and 65535');
   }
   const directory = process.env.JANUS_MERCHANT_STATE || fileURLToPath(new URL('../../.merchant-state/', import.meta.url));
+  const databaseUrl = process.env.JANUS_MERCHANT_DATABASE_URL;
   const accessToken = process.env.JANUS_MERCHANT_ACCESS_TOKEN;
-  if (process.env.RENDER === 'true' && (!process.env.JANUS_MERCHANT_STATE || !accessToken || accessToken.length < 32)) {
-    throw new Error('Render requires a persistent merchant state path and an access token of at least 32 characters');
+  if (process.env.RENDER === 'true' && ((!databaseUrl && !process.env.JANUS_MERCHANT_STATE) || !accessToken || accessToken.length < 32)) {
+    throw new Error('Render requires Postgres or a persistent merchant state path and an access token of at least 32 characters');
   }
   const authorization = accessToken ? Buffer.from('Bearer ' + accessToken) : null;
   const network = JSON.parse(fs.readFileSync(new URL('../../../shared/network.json', import.meta.url), 'utf8'));
@@ -31,12 +32,25 @@ async function main() {
   const publicClient = createPublicClient({ chain, transport, cacheTime: 0 });
   const proof = JSON.parse(fs.readFileSync(new URL('../../../contracts/phase1/evidence/live-proof.json', import.meta.url), 'utf8'));
   const deploymentReceipt = await publicClient.getTransactionReceipt({ hash: proof.deploymentHash });
-  const releaseSigner = acquireSignerLock(directory, merchantAccount.address);
-  process.once('exit', releaseSigner);
-  const merchant = await createTaskMerchant({ directory,
-   publicClient, fromBlock: deploymentReceipt.blockNumber, walletClient: createWalletClient({ chain, transport, account: merchantAccount }), manifest,
-   produce: async ({ request }) => ({ schemaVersion: '1', requestHash: (await import('../lib/task-merchant.mjs')).requestHash(request), dataset: request.body }),
+  let journal;
+  const merchant = await createTaskMerchant({
+    directory,
+    withRecord: databaseUrl ? (key, run) => journal.withRecord(key, run) : undefined,
+    publicClient,
+    fromBlock: deploymentReceipt.blockNumber,
+    walletClient: createWalletClient({ chain, transport, account: merchantAccount }),
+    manifest,
+    produce: async ({ request }) => ({ schemaVersion: '1', requestHash: requestHash(request), dataset: request.body }),
   });
+  let releaseSigner;
+  if (databaseUrl) {
+    const { openPostgresJournal } = await import('../lib/postgres-journal.mjs');
+    journal = await openPostgresJournal(databaseUrl, merchantAccount.address);
+    releaseSigner = journal.close;
+  } else {
+    releaseSigner = acquireSignerLock(directory, merchantAccount.address);
+    process.once('exit', releaseSigner);
+  }
   const handleMerchant = taskMerchantHandler(merchant);
   const server = http.createServer({ requestTimeout: 15000, headersTimeout: 10000, maxHeaderSize: 16384 }, (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
@@ -52,11 +66,26 @@ async function main() {
     }
     return handleMerchant(req, res);
   });
-  server.once('error', () => { releaseSigner(); console.error('Task merchant listener failed'); process.exitCode = 1; });
+  let shuttingDown = false;
+  async function shutdown(exitCode) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await releaseSigner();
+    } catch {
+      console.error('Merchant journal shutdown failed; reconcile the signer claim before restarting');
+      exitCode = 1;
+    }
+    process.exit(exitCode);
+  }
+  server.once('error', () => {
+    console.error('Task merchant listener failed');
+    void shutdown(1);
+  });
   server.maxConnections = 64;
   server.maxRequestsPerSocket = 100;
   server.keepAliveTimeout = 5000;
   server.listen(port, host, () => console.log('Hedera testnet task merchant listening on %s:%d', host, port));
-  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => process.exit(0)));
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close(() => { void shutdown(0); }));
 }
 main().catch(() => { console.error('Task merchant startup failed; run npm run task:preflight --prefix backend for setup diagnostics'); process.exitCode = 1; });

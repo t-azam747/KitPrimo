@@ -6,7 +6,7 @@ import { operationId, encodeAuthorization, baseUnits } from '../../../shared/pro
 import { taskTreasuryAbi as abi } from './treasury.mjs';
 import { accessMessage, quoteMessage, requestHash } from './task-merchant.mjs';
 
-export async function buyTaskDataset({ publicClient, walletClient, endpoint, taskId, stepId, request, manifest, localMerchant = false, onReuse = () => {} }) {
+export async function buyTaskDataset({ publicClient, walletClient, endpoint, taskId, stepId, request, manifest, localMerchant = false, merchantAccessToken, onReuse = () => {} }) {
  endpoint = merchantEndpoint(endpoint, { local: localMerchant && manifest.mode === 'local' && manifest.chainId === 1337 });
  await validateTreasury(publicClient, manifest);
  if (request.treasury.toLowerCase() !== manifest.treasury.toLowerCase() || request.token.toLowerCase() !== manifest.token.toLowerCase()) throw new Error('Client deployment mismatch');
@@ -16,8 +16,10 @@ export async function buyTaskDataset({ publicClient, walletClient, endpoint, tas
  const op = await read('getOperation', [taskId, opId]);
  const attempt = Number(op.status) === 0 || Number(op.status) === 3 ? op.attempt + 1n : op.attempt;
  const authorization = encodeAuthorization(taskId, opId, attempt.toString());
+ const headers = { 'content-type': 'application/json' };
+ if (merchantAccessToken) headers.authorization = 'Bearer ' + merchantAccessToken;
  const post = async (route, value) => {
-  const response = await fetch(new URL(route, endpoint), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value), signal: AbortSignal.timeout(120000), redirect: 'error' });
+  const response = await fetch(new URL(route, endpoint), { method: 'POST', headers, body: JSON.stringify(value), signal: AbortSignal.timeout(120000), redirect: 'error' });
   if (!response.ok) throw new Error('Merchant rejected request or payment requires reconciliation; do not blindly retry');
   return response.json();
  };

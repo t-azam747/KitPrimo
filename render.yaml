@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: janus-testnet-merchant
+    runtime: node
+    branch: main
+    plan: starter
+    buildCommand: npm ci --prefix contracts && npm ci --prefix backend --omit=dev
+    startCommand: node backend/hedera/scripts/task-server.mjs
+    healthCheckPath: /health
+    autoDeployTrigger: "off"
+    disk:
+      name: merchant-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: HOST
+        value: 0.0.0.0
+      - key: JANUS_MERCHANT_STATE
+        value: /var/data/merchant
+      - key: JANUS_MERCHANT_ACCESS_TOKEN
+        generateValue: true
+      - key: HEDERA_MERCHANT_PRIVATE_KEY
+        sync: false
+      - key: HEDERA_RPC_URL
+        sync: false

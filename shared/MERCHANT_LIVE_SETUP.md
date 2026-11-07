@@ -34,3 +34,9 @@ Public hosting, an authenticated/rate-limited TLS gateway, storage backups/resto
 The bounded live check passed on 6 November 2026. The allocation was reconciled against latest/pending owner nonces, signed with a fixed nonce, and its raw transaction/hash journaled before one broadcast. Its immutable task ID prevents another allocation. Subsequent uncertain broadcasts reconcile the saved hash rather than generating another transaction.
 
 The treasury debit and merchant credit were exactly 20,000 USDC base units. Paid-result replay returned the original receipt and artifact hash with no additional debit. Public evidence is in `backend/hedera/evidence/task-aware-live-proof.json`; signed transaction bytes remain only in ignored private state. The completed-run guard reports the saved proof without network calls or new spending. The public RPC can still be intermittent; this is bounded testnet verification, not a production availability guarantee or native consensus child-record certification.
+
+## Render testnet merchant
+
+The repository root `render.yaml` defines one paid Node service with a persistent disk and manual deploys. Connect the repository in Render as a Blueprint and set the dedicated `HEDERA_MERCHANT_PRIVATE_KEY` and `HEDERA_RPC_URL` in Render. Configure merchant callers to send `Authorization: Bearer <JANUS_MERCHANT_ACCESS_TOKEN>` using the generated service secret. `GET /health` is public and serves only startup readiness. The Compose dashboard still uses its local merchant and chain.
+
+Stop any other process using the same signer before starting the hosted merchant. Preserve its existing merchant state under the configured disk path if migrating an active deployment. After deployment, verify readiness and check that a bounded testnet purchase can be replayed after a restart without an additional debit.
